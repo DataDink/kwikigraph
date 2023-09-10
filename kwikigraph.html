@@ -1,0 +1,311 @@
+<html>
+  <head>
+    <title>Kwikigraph</title>
+    <style>
+      @namespace svgns url('http://www.w3.org/2000/svg');
+      
+      html, body, main {
+        display: block;
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        position: relative;
+      }
+      #graph {
+        display: block;
+        margin: 0; padding: 0;
+        left: 0; right: 0;
+        top: 0; bottom: 20%;
+        position: absolute;
+        width: auto; height: auto;
+        background: #404040;
+      }
+      #output {
+        display: block;
+        margin: 0; padding: .5em;
+        left: 0; right: 0;
+        top: auto; bottom: 5%;
+        position: absolute;
+        width: auto; height: 15%;
+        background: black;
+        color: white;
+        border: 1px solid white;
+        border-bottom: none;
+        resize: vertical;
+        outline: none;
+      }
+      #input {
+        display: block;
+        margin: 0; padding: .5em;
+        left: 0; right: 0;
+        top: auto; bottom: 0;
+        position: absolute;
+        width: auto; height: 5%;
+        background: black;
+        color: white;
+        border: 1px solid white;
+        border-top: none;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main></main>
+    <script>
+      (() => {
+        class Graph {
+          get cursor() { return Array.from(this.#cursor); } #cursor = [0,0];
+          move(x, y) { this.#cursor = [parseFloat(x)||0, -(parseFloat(y)||0)]; }
+
+          get offsets() { return Array.from(this.#offsets); } #offsets = [0,0];
+          offset(x, y) { this.#offsets = [-(parseFloat(x)||0), (parseFloat(y)||0)]; }
+
+          get grids() { return this.#grids; } #grids = 100;
+          grid(size) { this.#grids = parseFloat(size)||0; }
+
+          get colors() { return Object.assign({}, this.#colors); } #colors = {
+            stroke: 'green',
+            grid: '#202020',
+            background: '#101010',
+            origin: '#8080FF'
+          };
+          color(stroke, grid, background, origin) { 
+            this.#colors = { 
+              stroke: stroke ?? this.#colors.stroke, 
+              grid: grid ?? this.#colors.grid, 
+              background: background ?? this.#colors.background,
+              origin: origin ?? this.#colors.origin
+            }; 
+          }
+
+          get weights() { return Object.assign({}, this.#weights); } #weights = {
+            stroke: 2,
+            grid: 1,
+            origin: 1
+          };
+          weight(stroke, grid, origin) { 
+            this.#weights = { 
+              stroke: parseFloat(stroke ?? this.#weights.stroke)||0, 
+              grid: grid ?? this.#weights.grid,
+              origin: origin ?? this.#weights.origin
+            }; 
+          }
+
+          get plots() { return Array.from(this.#plots); } #plots = [];
+          plot(x, y, move) {
+            this.#plots.push({
+              x: parseFloat(x)||0, 
+              y: -(parseFloat(y)||0),
+              color: this.#colors.stroke,
+              weight: this.#weights.stroke,
+            });
+            if (move) this.move(this.#plots.at(-1).x, -this.#plots.at(-1).y);
+          }
+
+          get lines() { return Array.from(this.#lines); } #lines = [];
+          line(x, y, move) {
+            this.#lines.push({
+              x1: this.#cursor[0],
+              y1: this.#cursor[1],
+              x2: parseFloat(x)||0, 
+              y2: -(parseFloat(y)||0),
+              color: this.#colors.stroke,
+              weight: this.#weights.stroke,
+            });
+            if (move) this.move(this.#lines.at(-1).x2, -this.#lines.at(-1).y2);
+          }
+
+          get values() { return Object.assign({}, this.#values); } #values = {};
+          set(key, value) { this.#values[key] = value; }
+          get(key) { return this.#values[key]; }
+
+          clear() {
+            this.#plots = [];
+            this.#lines = [];
+          }
+        }
+        const graph = new Graph();
+
+        class Console {
+          #contexts;
+          history = [];
+
+          constructor(context) { this.#contexts = context; }
+
+          execute(input) {
+            let [command, ...args] = Console.split(input);
+            if (typeof(this.#contexts[command])!=='function') throw new Error(`Invalid command: ${command}`);
+            let values = args.map((arg, i) => {
+              try { return new Function(`return ${arg}`).call(this.#contexts); }
+              catch { 
+                try { return new Function(`return '${arg}'`).call(this.#contexts); }
+                catch (error) { throw new Error(`Invalid argument: #${i+1} '${arg}'`); } 
+              }
+            });
+            try { 
+              var result = this.#contexts[command](...values); 
+              this.history.push(`${command} ${args.join(' ')}`);
+              return result;
+            } catch (error) { throw new Error(`Command failed: '${command}' ${error.message}`); }
+          }
+
+          static split(input) {
+            input = input.trim();
+            let args = [];
+            while (input.length) {
+              args.push(Console.readArg(input));
+              input = input.slice(args.at(-1).length).trim();
+            }
+            return args;
+          }
+
+          static readArg(input) {
+            if (input.match(/"|'|`/)) throw new Error(`Invalid input: Strings not supported.`);
+            if (input[0] !== '(') return input.match(/^\S+/)[0];
+            for (var i=1, depth=1; depth && i<input.length; i++) {
+              switch(input[i]) {
+                case '(': depth++; break;
+                case ')': depth--; break;
+              }
+            }
+            return input.slice(0, i);
+          }
+        }
+        const interface = new Console(graph);
+
+        class View {
+          #root=document.body;
+          #graphs;
+          #resizeWatchers;
+
+          constructor(graph, target) {
+            if (target != null && !(target instanceof HTMLElement)) throw new Error(`Fatal: The view target must be an HTMLElement.`);
+            this.#root = target ?? this.#root;
+            if (!(graph instanceof Graph)) throw new Error(`Fatal: The view graph must be a Graph.`);
+            this.#graphs = graph;
+            this.#resizeWatchers = new ResizeObserver(() => this.render());
+            this.#resizeWatchers.observe(this.#root);
+            this.render();
+          }
+
+          render() {
+            const graph = this.#graphs;
+            if (!document.contains(this.#root)) throw new Error(`Fatal: The view is detached.`);
+            const bounds = this.#root.getBoundingClientRect();
+            const style = getComputedStyle(this.#root);
+
+            const doc = document.getElementById('graph') 
+                     ?? this.#root.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'svg'));
+            doc.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:xlink', 'http://www.w3.org/1999/xlink');
+            doc.setAttribute('width', `${bounds.width}px`);
+            doc.setAttribute('height', `${bounds.height}px`);
+            doc.setAttribute('viewBox', `${-bounds.width/2+graph.offsets[0]} ${-bounds.height/2+graph.offsets[1]} ${bounds.width} ${bounds.height}`);
+            doc.setAttribute('id', 'graph');
+            doc.style.backgroundColor = graph.colors.background;
+
+            const gridGroup = document.getElementById('grid')
+                            ?? doc.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'g'));
+            gridGroup.setAttribute('id', 'grid');
+            const grid = Array.from(gridGroup.childNodes).filter(node => node.tagName==='line');
+            for (var x=0; x<bounds.width/2; x+=graph.grids) {
+              for (var m = -1; m<=1; m+=2) {
+                let line = grid.shift() ?? gridGroup.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'line'));
+                line.setAttribute('x1', m*x+graph.offsets[0]);
+                line.setAttribute('y1', -bounds.height/2+graph.offsets[1]);
+                line.setAttribute('x2', m*x+graph.offsets[0]);
+                line.setAttribute('y2', bounds.height/2+graph.offsets[1]);
+                line.setAttribute('stroke', graph.colors.grid);
+                line.setAttribute('stroke-width', graph.weights.grid);
+                if (x===0) { break; }
+              }
+            }
+            for (var y=0; y<bounds.height/2; y+=graph.grids) {
+              for (var m = -1; m<=1; m+=2) {
+                let line = grid.shift() ?? gridGroup.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'line'));
+                line.setAttribute('x1', -bounds.width/2+graph.offsets[0]);
+                line.setAttribute('y1', m*y+graph.offsets[1]);
+                line.setAttribute('x2', bounds.width/2+graph.offsets[0]);
+                line.setAttribute('y2', m*y+graph.offsets[1]);
+                line.setAttribute('stroke', graph.colors.grid);
+                line.setAttribute('stroke-width', graph.weights.grid);
+                if (y===0) { break; }
+              }
+            }
+            while (grid.length) gridGroup.removeChild(grid.shift());
+            for (var line of Array.from(gridGroup.childNodes)) {
+              if (line.x2.baseVal.value === 0 || line.y2.baseVal.value === 0) {
+                line.classList.add('origin');
+                line.setAttribute('stroke', graph.colors.origin);
+                line.setAttribute('stroke-width', graph.weights.origin);
+              } else { line.classList.remove('origin'); }
+            }
+
+            const plotGroup = document.getElementById('plots')
+                           ?? doc.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'g'));
+            plotGroup.setAttribute('id', 'plots');
+            const plots = Array.from(plotGroup.childNodes).filter(node => node.tagName==='circle');
+            for (var i=0; i<graph.plots.length; i++) {
+              let plot = plots.shift() ?? plotGroup.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'circle'));
+              plot.setAttribute('cx', graph.plots[i].x);
+              plot.setAttribute('cy', graph.plots[i].y);
+              plot.setAttribute('r', graph.plots[i].weight*2);
+              plot.setAttribute('fill', graph.plots[i].color);
+            }
+            while (plots.length) plotGroup.removeChild(plots.shift());
+
+            const lineGroup = document.getElementById('lines')
+                           ?? doc.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'g'));
+            lineGroup.setAttribute('id', 'lines');
+            const lines = Array.from(lineGroup.childNodes).filter(node => node.tagName==='line');
+            for (var i=0; i<graph.lines.length; i++) {
+              let line = lines.shift() ?? lineGroup.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'line'));
+              line.setAttribute('x1', graph.lines[i].x1);
+              line.setAttribute('y1', graph.lines[i].y1);
+              line.setAttribute('x2', graph.lines[i].x2);
+              line.setAttribute('y2', graph.lines[i].y2);
+              line.setAttribute('stroke', graph.lines[i].color);
+              line.setAttribute('stroke-width', graph.lines[i].weight);
+            }
+            while (lines.length) lineGroup.removeChild(lines.shift());
+          }
+        }
+        const root = document.querySelector('main');
+        const view = new View(graph, root);
+        root.addEventListener('mousemove', e => {
+          const bounds = root.getBoundingClientRect();
+          const x = e.clientX - bounds.x - bounds.width/2 + graph.offsets[0];
+          const y = e.clientY - bounds.y - bounds.height/2 + graph.offsets[1];
+          root.setAttribute('title', `(${x}, ${-y})`);
+        });
+
+        const output = document.getElementById('output')
+                    ?? root.appendChild(document.createElement('textarea'));
+        output.setAttribute('id', 'output');
+        output.setAttribute('readonly', '');
+        output.setAttribute('spellcheck', 'false');
+
+        const input = document.getElementById('input')
+                   ?? root.appendChild(document.createElement('input'));
+        input.setAttribute('id', 'input');
+        input.setAttribute('type', 'text');
+        document.addEventListener('keyup', event => input.focus());
+        input.focus();
+        input.addEventListener('keydown', event => {
+          if (event.key === 'Enter') {
+            output.value += `> ${input.value.trim()}\n`;
+            try {
+              const response = interface.execute(input.value.replace(/\s+/g, ' '));
+              if (response != null) output.value += `${response}\n`;
+            } catch (error) { output.value += `Error: ${error.message}\n`; }
+            try { view.render(); } 
+            catch (error) { output.value += `Error: ${error.message}\n`; }
+            input.value = '';
+            output.scrollTop = output.scrollHeight;
+          }
+        });
+
+      })();
+    </script>
+  </body>
+</html>
